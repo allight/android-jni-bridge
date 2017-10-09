@@ -1,6 +1,7 @@
 package bitter.jnibridge;
 
 import java.lang.reflect.*;
+import java.lang.invoke.*;
 
 public class JNIBridge
 {
@@ -24,13 +25,41 @@ public class JNIBridge
 
 		public InterfaceProxy(final long ptr) { m_Ptr = ptr; }
 
-		public Object invoke(Object proxy, Method method, Object[] args)
+		private static final class DefaultInvoker {
+			private static Object invoke(Object proxy, Throwable t, Method m, Object[] args) throws Throwable {
+				try {
+					if (args == null)
+						args = new Object[0];
+					Class<?> k = m.getDeclaringClass();
+					Constructor<MethodHandles.Lookup> con =
+							MethodHandles.Lookup.class.getDeclaredConstructor(Class.class, Integer.TYPE);
+					con.setAccessible(true);
+					MethodHandles.Lookup lookup = con.newInstance(k, MethodHandles.Lookup.PRIVATE);
+					return lookup.in(k).unreflectSpecial(m, k).bindTo(proxy).invokeWithArguments(args);
+				} catch (NoClassDefFoundError ncdfe) {
+					t.addSuppressed(ncdfe);
+					throw t;
+				}
+			}
+		}
+
+		public Object invoke(Object proxy, Method method, Object[] args) throws Throwable
 		{
 			synchronized (m_InvocationLock)
 			{
-				if (m_Ptr == 0)
-					return null;
-				return JNIBridge.invoke(m_Ptr, method.getDeclaringClass(), method, args);
+				try {
+					if (m_Ptr == 0)
+						return null;
+					return JNIBridge.invoke(m_Ptr, method.getDeclaringClass(), method, args);
+				} catch (NoSuchMethodError e) {
+					if ((method.getModifiers() & Modifier.ABSTRACT) == 0) {
+						// We are default. Try to call the default impl.
+						return DefaultInvoker.invoke(proxy, e, method, args);
+					} else {
+						// Doesn't seem to be a default method!
+						throw e;
+					}
+				}
 			}
 		}
 
